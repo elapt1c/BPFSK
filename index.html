@@ -74,53 +74,52 @@
            let channelSequence = [];
            // Preamble
            channelSequence.push(1);
-          let trainingSequence = [2, 3, 4, 5, 6, 7, 8, 9, 10];
+           let trainingSequence = [2, 3, 4, 5, 6, 7, 8, 9, 10];
            channelSequence.push(...trainingSequence);
 
             for (let i = 0; i < message.length; i++) {
-                 const byte = message.charCodeAt(i);
-                for (let bit = 7; bit >= 0; bit--) {
-                    if ((byte >> bit) & 1) {
-                         channelSequence.push(bit + 3);
-                   }
-               }
+                const byte = message.charCodeAt(i);
+                for (let bit = 0; bit < 8; bit++) { // Changed loop here
+                     if ((byte >> bit) & 1) {
+                        channelSequence.push(bit + 3);
+                    }
+                }
                 channelSequence.push(2);
            }
-          // Postamble
-          channelSequence.push(1);
+           // Postamble
+           channelSequence.push(1);
            return channelSequence;
          }
 
-       async function generateAndPlay(message, channelDuration, preambleDuration) {
+        async function generateAndPlay(message, channelDuration, preambleDuration) {
            const channelSequence = getChannelSequence(message);
-           let displaySequence = [...channelSequence]
-           const oscillator = audioCtx.createOscillator();
+            let displaySequence = [...channelSequence]
+            const oscillator = audioCtx.createOscillator();
             oscillator.type = 'sine';
-             oscillator.connect(audioCtx.destination);
+            oscillator.connect(audioCtx.destination);
             let currentTime = audioCtx.currentTime
             for (const channel of channelSequence) {
-                 let duration = channelDuration;
-                 if (channel === 1 && (channelSequence.indexOf(channel) === 0 || channelSequence.lastIndexOf(channel) === channelSequence.length - 1)) {
+                let duration = channelDuration;
+                  if (channel === 1 && (channelSequence.indexOf(channel) === 0 || channelSequence.lastIndexOf(channel) === channelSequence.length - 1)) {
                     duration = preambleDuration;
-                 }
-                const frequency = channelFrequencies[channel];
-              if(frequency)
-              {
+                }
+               const frequency = channelFrequencies[channel];
+                if(frequency) {
                     oscillator.frequency.setValueAtTime(frequency, currentTime);
                     currentTime += duration
-               }
-           }
-             oscillator.start(audioCtx.currentTime);
-           oscillator.stop(currentTime);
+                }
+            }
+            oscillator.start(audioCtx.currentTime);
+            oscillator.stop(currentTime);
             return displaySequence;
-        }
+         }
 
         document.getElementById('generateButton').addEventListener('click', async function() {
             const message = document.getElementById('messageInput').value;
-             const channelDuration = parseFloat(document.getElementById('durationInput').value);
-           const preambleDuration = parseFloat(document.getElementById('preambleDurationInput').value)
-           const outputNumbers = await generateAndPlay(message, channelDuration, preambleDuration);
-           document.getElementById('outputNumbers').textContent = outputNumbers.join(', ');
+            const channelDuration = parseFloat(document.getElementById('durationInput').value);
+            const preambleDuration = parseFloat(document.getElementById('preambleDurationInput').value);
+            const outputNumbers = await generateAndPlay(message, channelDuration, preambleDuration);
+            document.getElementById('outputNumbers').textContent = outputNumbers.join(', ');
         });
 
         const durationInput = document.getElementById('durationInput');
