@@ -44,7 +44,7 @@
     <div class="settings">
         <div>
             <label for="durationInput">Channel Duration:</label>
-            <input type="range" id="durationInput" min="0.005" max="0.2" step="0.01" value="0.05">
+            <input type="range" id="durationInput" min="0.005" max="0.2" step="0.005" value="0.03">
             <span id="durationValue">0.05s</span>
         </div>
          <div>
@@ -57,18 +57,19 @@
     <h2>Channel Numbers</h2>
     <div class="output-numbers" id="outputNumbers"></div>
     <script>
-        const channelFrequencies = {
-            1: 440,  // A4
-            2: 523,  // C5
-            3: 587,  // D5
-            4: 659,  // E5
-            5: 784,  // G5
-            6: 880,  // A5
-            7: 988,  // B5
-            8: 1047, // C6
-            9: 1175, // D6
-            10: 1319 // E6
-        };
+	// In your HTML <script> block
+	const channelFrequencies = {
+    	1: 5000,  // Preamble/Postamble
+    	2: 6000,  // Training / Data Bit Sep
+    	3: 7000,  // Bit 0
+    	4: 8000,  // Bit 1
+    	5: 9000,  // Bit 2
+    	6: 10000, // Bit 3
+    	7: 11000, // Bit 4
+    	8: 12000, // Bit 5
+    	9: 13000, // Bit 6
+	    10: 14000 // Bit 7
+	};
         const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
          function getChannelSequence(message) {
            let channelSequence = [];
