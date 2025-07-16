@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BPFSK</title>
+    <title>BPFSK Transmitter (Raw Files/Text)</title>
     <style>
         body {
             font-family: sans-serif;
@@ -17,123 +17,341 @@
             width: 500px;
             height: 100px;
         }
+        .file-upload-area {
+            margin-bottom: 10px;
+            width: 500px;
+            text-align: left;
+            border: 1px dashed #ccc;
+            padding: 15px;
+            border-radius: 5px;
+        }
+        .file-info {
+            margin-top: 5px;
+            font-size: 0.9em;
+            color: #555;
+        }
         .settings {
           display: flex;
           flex-direction: column;
-          align-items: start;
+          align-items: flex-start;
           margin: 10px;
+          width: 500px; /* Constrain width for better layout */
         }
         .settings > div {
-          margin: 10px;
+          margin: 10px 0;
+          width: 100%;
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
         }
         .output-numbers {
             margin-top: 20px;
             white-space: pre-wrap;
             word-break: break-word;
+            border: 1px solid #ccc;
+            padding: 10px;
+            max-height: 200px;
+            overflow-y: auto;
+            width: 500px;
         }
         button {
             padding: 10px 20px;
             cursor: pointer;
             margin-bottom: 10px;
         }
+        input[type="range"] {
+            flex-grow: 1;
+            margin: 0 10px;
+        }
     </style>
 </head>
 <body>
-    <h1>BPFSK</h1>
-    <textarea id="messageInput" placeholder="Enter your message here"></textarea>
+    <h1>BPFSK Transmitter (Raw Files/Text)</h1>
+
+    <div class="file-upload-area">
+        <label for="fileInput">Or upload a file:</label><br>
+        <input type="file" id="fileInput">
+        <div class="file-info" id="fileInfo">No file selected.</div>
+    </div>
+    
+    <textarea id="messageInput" placeholder="Enter your text message here (will be ignored if file is selected)"></textarea>
+
     <div class="settings">
         <div>
             <label for="durationInput">Channel Duration:</label>
             <input type="range" id="durationInput" min="0.005" max="0.2" step="0.005" value="0.03">
-            <span id="durationValue">0.05s</span>
+            <span id="durationValue">0.030s</span>
         </div>
          <div>
             <label for="preambleDurationInput">Preamble Duration:</label>
             <input type="range" id="preambleDurationInput" min="0.5" max="3" step="0.1" value="1">
-            <span id="preambleDurationValue">1s</span>
+            <span id="preambleDurationValue">1.0s</span>
         </div>
     </div>
     <button id="generateButton">Generate and Play</button>
-    <h2>Channel Numbers</h2>
+    <h2>Channel Sequence Transmitted</h2>
     <div class="output-numbers" id="outputNumbers"></div>
     <script>
-	// In your HTML <script> block
-	const channelFrequencies = {
-    	1: 5000,  // Preamble/Postamble
-    	2: 6000,  // Training / Data Bit Sep
-    	3: 7000,  // Bit 0
-    	4: 8000,  // Bit 1
-    	5: 9000,  // Bit 2
-    	6: 10000, // Bit 3
-    	7: 11000, // Bit 4
-    	8: 12000, // Bit 5
-    	9: 13000, // Bit 6
-	    10: 14000 // Bit 7
-	};
+        // Channel Frequencies (must match Python decoder)
+        const channelFrequencies = {};
+        const MIN_OPERATING_FREQ_HZ = 10000;
+        const MAX_OPERATING_FREQ_HZ = 18000;
+        const NUM_TOTAL_CHANNELS = 19; // Channels 1 through 19
+
+        // Calculate the frequency step for linear spacing
+        const FREQ_STEP = (MAX_OPERATING_FREQ_HZ - MIN_OPERATING_FREQ_HZ) / (NUM_TOTAL_CHANNELS - 1);
+
+        for (let i = 1; i <= NUM_TOTAL_CHANNELS; i++) {
+            channelFrequencies[i] = MIN_OPERATING_FREQ_HZ + (i - 1) * FREQ_STEP;
+        }
+
+        // Optional: Log frequencies to console for verification
+        console.log("Generated Channel Frequencies (Hz):");
+        for (const channel in channelFrequencies) {
+            console.log(`Ch ${channel}: ${channelFrequencies[channel].toFixed(1)} Hz`);
+        }
+
+        // --- Protocol Constants ---
+        const HEADER_START_DELIMITER = 0xFE;
+        const MESSAGE_TYPE_TEXT = 0x00;
+        const MESSAGE_TYPE_FILE = 0x01;
+        const HEADER_END_DELIMITER = 0xFF;
+
         const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-         function getChannelSequence(message) {
-           let channelSequence = [];
-           // Preamble
-           channelSequence.push(1);
-           let trainingSequence = [2, 3, 4, 5, 6, 7, 8, 9, 10];
-           channelSequence.push(...trainingSequence);
 
-            for (let i = 0; i < message.length; i++) {
-                const byte = message.charCodeAt(i);
-                for (let bit = 0; bit < 8; bit++) { // Changed loop here
-                     if ((byte >> bit) & 1) {
-                        channelSequence.push(bit + 3);
-                    }
+        /**
+         * Converts a number to a little-endian byte array.
+         * @param {number} value The number to convert.
+         * @param {number} numBytes The number of bytes to output (e.g., 2 for UInt16, 4 for UInt32).
+         * @returns {Uint8Array} The byte array.
+         */
+        function toLittleEndianBytes(value, numBytes) {
+            const arr = new Uint8Array(numBytes);
+            for (let i = 0; i < numBytes; i++) {
+                arr[i] = (value >> (i * 8)) & 0xFF;
+            }
+            return arr;
+        }
+
+        /**
+         * Creates the protocol header for file or text data (no compression).
+         * @param {number} messageType MESSAGE_TYPE_TEXT or MESSAGE_TYPE_FILE.
+         * @param {Uint8Array} rawData The raw data (text or file content).
+         * @param {Object} [fileMetadata] Optional. Contains { name: string, ext: string } for files.
+         * @returns {Uint8Array} The complete header as a byte array.
+         */
+        async function createHeader(messageType, rawData, fileMetadata = null) {
+            const headerParts = [];
+            const textEncoder = new TextEncoder();
+
+            headerParts.push(HEADER_START_DELIMITER);
+            headerParts.push(messageType);
+
+            if (messageType === MESSAGE_TYPE_FILE && fileMetadata) {
+                const filenameBytes = textEncoder.encode(fileMetadata.name);
+                const extensionBytes = textEncoder.encode(fileMetadata.ext);
+
+                if (filenameBytes.length > 65535 || extensionBytes.length > 65535) {
+                    throw new Error("Filename or extension is too long (max 65535 bytes).");
                 }
-                channelSequence.push(2);
-           }
-           // Postamble
-           channelSequence.push(1);
-           return channelSequence;
-         }
+                if (rawData.length > 0xFFFFFFFF) { // Check for 4GB limit for raw data
+                     throw new Error("File size exceeds 4GB limit.");
+                }
 
-        async function generateAndPlay(message, channelDuration, preambleDuration) {
-           const channelSequence = getChannelSequence(message);
-            let displaySequence = [...channelSequence]
+                headerParts.push(...toLittleEndianBytes(filenameBytes.length, 2));
+                headerParts.push(...filenameBytes);
+                headerParts.push(...toLittleEndianBytes(extensionBytes.length, 2));
+                headerParts.push(...extensionBytes);
+                headerParts.push(...toLittleEndianBytes(rawData.length, 4)); // Raw data size
+            } else if (messageType === MESSAGE_TYPE_TEXT) {
+                if (rawData.length > 0xFFFFFFFF) { // Check for 4GB limit for raw text
+                     throw new Error("Text message size exceeds 4GB limit.");
+                }
+                headerParts.push(...toLittleEndianBytes(rawData.length, 4)); // Raw text data size
+            }
+            
+            headerParts.push(HEADER_END_DELIMITER);
+
+            return new Uint8Array(headerParts);
+        }
+
+        /**
+         * Generates the sequence of channel IDs for the complete transmission payload.
+         * @param {Uint8Array} payloadBytes The complete payload (header + raw data).
+         * @returns {number[]} An array of channel IDs representing the payload.
+         */
+        function getChannelSequence(payloadBytes) {
+            let channelSequence = [];
+
+            // Preamble
+            channelSequence.push(1);
+
+            // Training Sequence: Channel 2, then 3, then channels 4-19
+            let trainingSequence = [2, 3]; 
+            for (let i = 4; i <= 19; i++) {
+                trainingSequence.push(i);
+            }
+            channelSequence.push(...trainingSequence);
+
+            // Convert payload bytes to channel IDs
+            for (let i = 0; i < payloadBytes.length; i++) {
+                const byte = payloadBytes[i];
+
+                // Convert byte to two hex digits (nibbles)
+                const highNibble = (byte >> 4) & 0xF; // Get the 4 most significant bits (0-15)
+                const lowNibble = byte & 0xF;        // Get the 4 least significant bits (0-15)
+
+                // Transmit High Nibble (channel 4-19 for values 0-F)
+                // hex_value (0-15) + 4 = channel_id (4-19)
+                channelSequence.push(highNibble + 4);
+
+                // Transmit Low Nibble (channel 4-19 for values 0-F)
+                channelSequence.push(lowNibble + 4);
+
+                // Transmit Byte Separator (Channel 2) after each completed byte
+                channelSequence.push(2); 
+            }
+
+            // Postamble
+            channelSequence.push(1);
+            return channelSequence;
+        }
+
+        /**
+         * Generates and plays the audio tones based on the channel sequence.
+         * @param {string} message The message to encode and play.
+         * @param {File} file The file to encode and play (optional).
+         * @param {number} channelDuration Duration for data/separator channels in seconds.
+         * @param {number} preambleDuration Duration for preamble/postamble in seconds.
+         * @returns {Promise<number[]>} A promise that resolves with the generated channel sequence.
+         */
+        async function generateAndPlay(message, file, channelDuration, preambleDuration) {
+            let rawDataBytes; // This will hold the actual data to be sent (text or file content)
+            let headerBytes;
+            let messageType;
+
+            if (file) {
+                messageType = MESSAGE_TYPE_FILE;
+                const fileReader = new FileReader();
+                const fileLoadPromise = new Promise(resolve => {
+                    fileReader.onload = () => resolve(new Uint8Array(fileReader.result));
+                    fileReader.readAsArrayBuffer(file);
+                });
+                rawDataBytes = await fileLoadPromise;
+                
+                const fileName = file.name;
+                const fileExt = fileName.includes('.') ? fileName.split('.').pop() : '';
+                const baseName = fileName.includes('.') ? fileName.substring(0, fileName.lastIndexOf('.')) : fileName;
+
+                console.log(`Raw file size: ${rawDataBytes.length} bytes`);
+
+                headerBytes = await createHeader(
+                    messageType,
+                    rawDataBytes,
+                    { name: baseName, ext: fileExt } // No originalSize needed, rawDataBytes.length is the final size
+                );
+
+            } else { // Text message
+                messageType = MESSAGE_TYPE_TEXT;
+                const textEncoder = new TextEncoder();
+                rawDataBytes = textEncoder.encode(message);
+                
+                console.log(`Raw text bytes: ${rawDataBytes.length} bytes`);
+
+                headerBytes = await createHeader(messageType, rawDataBytes);
+            }
+
+            // Combine header and raw data
+            const fullPayload = new Uint8Array(headerBytes.length + rawDataBytes.length);
+            fullPayload.set(headerBytes, 0);
+            fullPayload.set(rawDataBytes, headerBytes.length);
+            console.log(`Total payload size (header + raw data): ${fullPayload.length} bytes`);
+
+            const channelSequence = getChannelSequence(fullPayload);
             const oscillator = audioCtx.createOscillator();
             oscillator.type = 'sine';
             oscillator.connect(audioCtx.destination);
-            let currentTime = audioCtx.currentTime
-            for (const channel of channelSequence) {
+
+            let currentTime = audioCtx.currentTime;
+
+            for (let i = 0; i < channelSequence.length; i++) {
+                const channel = channelSequence[i];
                 let duration = channelDuration;
-                  if (channel === 1 && (channelSequence.indexOf(channel) === 0 || channelSequence.lastIndexOf(channel) === channelSequence.length - 1)) {
+
+                // Check for Preamble (first channel 1) or Postamble (last channel 1)
+                if (channel === 1 && (i === 0 || i === channelSequence.length - 1)) {
                     duration = preambleDuration;
                 }
-               const frequency = channelFrequencies[channel];
-                if(frequency) {
+
+                const frequency = channelFrequencies[channel];
+
+                if (frequency) {
                     oscillator.frequency.setValueAtTime(frequency, currentTime);
-                    currentTime += duration
+                    currentTime += duration;
+                } else {
+                    console.warn(`Warning: No frequency defined for channel ${channel}`);
                 }
             }
-            oscillator.start(audioCtx.currentTime);
-            oscillator.stop(currentTime);
-            return displaySequence;
-         }
 
+            oscillator.start(audioCtx.currentTime);
+            oscillator.stop(currentTime); // Stop oscillator after all tones are played
+
+            return channelSequence; // Return the sequence for display
+        }
+
+        // Event listener for the "Generate and Play" button
         document.getElementById('generateButton').addEventListener('click', async function() {
             const message = document.getElementById('messageInput').value;
+            const file = document.getElementById('fileInput').files[0];
             const channelDuration = parseFloat(document.getElementById('durationInput').value);
             const preambleDuration = parseFloat(document.getElementById('preambleDurationInput').value);
-            const outputNumbers = await generateAndPlay(message, channelDuration, preambleDuration);
+
+            // Ensure AudioContext is in 'running' state (important for some browsers)
+            if (audioCtx.state === 'suspended') {
+                await audioCtx.resume();
+            }
+
+            if (!message && !file) {
+                alert("Please enter a message or select a file to transmit.");
+                return;
+            }
+
+            const outputNumbers = await generateAndPlay(message, file, channelDuration, preambleDuration);
             document.getElementById('outputNumbers').textContent = outputNumbers.join(', ');
         });
 
+        // Sliders for duration settings
         const durationInput = document.getElementById('durationInput');
         const durationValue = document.getElementById('durationValue');
         const preambleDurationInput = document.getElementById('preambleDurationInput');
         const preambleDurationValue = document.getElementById('preambleDurationValue');
 
+        // Update displayed values when sliders are moved
         durationInput.addEventListener('input', function() {
-            durationValue.textContent = durationInput.value + 's';
+            durationValue.textContent = parseFloat(durationInput.value).toFixed(3) + 's';
         });
 
         preambleDurationInput.addEventListener('input', function() {
-            preambleDurationValue.textContent = preambleDurationInput.value + 's';
+            preambleDurationValue.textContent = parseFloat(preambleDurationInput.value).toFixed(1) + 's';
+        });
+
+        // Initialize displayed values on load
+        durationValue.textContent = parseFloat(durationInput.value).toFixed(3) + 's';
+        preambleDurationValue.textContent = parseFloat(preambleDurationInput.value).toFixed(1) + 's';
+
+        // File input change listener
+        const fileInput = document.getElementById('fileInput');
+        const fileInfo = document.getElementById('fileInfo');
+        fileInput.addEventListener('change', function() {
+            if (this.files.length > 0) {
+                fileInfo.textContent = `Selected: ${this.files[0].name} (${this.files[0].size} bytes)`;
+                document.getElementById('messageInput').disabled = true; // Disable text input if file selected
+                document.getElementById('messageInput').placeholder = "Text input disabled (file selected)";
+            } else {
+                fileInfo.textContent = 'No file selected.';
+                document.getElementById('messageInput').disabled = false;
+                document.getElementById('messageInput').placeholder = "Enter your text message here (will be ignored if file is selected)";
+            }
         });
     </script>
 </body>
